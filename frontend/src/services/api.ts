@@ -58,3 +58,13 @@ export const playlistsApi = {
   removeCover: (id: string): Promise<Playlist> =>
     axios.delete(`${API_BASE}/playlists/${id}/cover`).then(res => res.data)
 };
+
+// Mass update API
+export const bulkApi = {
+  updateTracks: (data: {
+    filenames: string[];
+    artist?: string;
+    album?: string;
+  }): Promise<{ message: string; updated: number; tracks: any[] }> =>
+    axios.post(`${API_BASE}/music/bulk-update`, data).then(res => res.data),
+};

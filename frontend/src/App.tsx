@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MusicFile, Playlist, EditTrackData, UploadingCover } from './types';
-import { musicApi, playlistsApi } from './services/api';
+import { MusicFile, Playlist, EditTrackData } from './types';
+import { musicApi, playlistsApi, bulkApi } from './services/api';
 import { getPlaylistTracks } from './utils';
 import PlaylistItem from './components/PlaylistItem';
 import TrackItem from './components/TrackItem';
 import AudioPlayer from './components/AudioPlayer';
 import FileUpload from './components/FileUpload';
-import Modal from './components/Modal';
+import EditPlaylistModal from './components/EditPlaylistModal';
+import EditTrackModal from './components/EditTrackModal';
 import './App.css';
 
 function App() {
@@ -26,7 +27,10 @@ function App() {
     album: ''
   });
 
-  const [uploadingCoverFor, setUploadingCoverFor] = useState<UploadingCover | null>(null);
+  const [uploadingCoverFor, setUploadingCoverFor] = useState<{
+    type: 'playlist' | 'track';
+    id: string;
+  } | null>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -214,10 +218,99 @@ function App() {
     }, 0);
   };
 
+  // Функция для массового обновления треков
+const handleBulkUpdate = async (updates: {
+  filenames: string[];
+  artist?: string;
+  album?: string;
+  cover?: File;
+  removeCover?: boolean;
+}) => {
+  try {
+    let updatedCount = 0;
+
+    // Обновляем метаданные (артист и альбом)
+    if (updates.artist || updates.album) {
+      const metadataResponse = await bulkApi.updateTracks({
+        filenames: updates.filenames,
+        artist: updates.artist,
+        album: updates.album
+      });
+      updatedCount += metadataResponse.updated;
+      
+      // Обновляем локальный стейт для метаданных
+      setMusicFiles(prevFiles => 
+        prevFiles.map(track => 
+          updates.filenames.includes(track.filename) 
+            ? {
+                ...track,
+                artist: updates.artist || track.artist,
+                album: updates.album !== undefined ? updates.album : track.album
+              }
+            : track
+        )
+      );
+    }
+
+    // Обновляем обложки если есть файл
+    if (updates.cover) {
+      const uploadPromises = updates.filenames.map(filename => 
+        musicApi.uploadCover(filename, updates.cover!)
+      );
+      
+      await Promise.all(uploadPromises);
+      updatedCount += updates.filenames.length;
+      
+      // Обновляем локальный стейт для обложек
+      setMusicFiles(prevFiles => 
+        prevFiles.map(track => 
+          updates.filenames.includes(track.filename) 
+            ? { ...track, cover: updates.cover?.name || track.cover }
+            : track
+        )
+      );
+    }
+
+    // Удаляем обложки если нужно
+    if (updates.removeCover) {
+      updatedCount += updates.filenames.length;
+      
+      // Обновляем локальный стейт - удаляем обложки
+      setMusicFiles(prevFiles => 
+        prevFiles.map(track =>
+          updates.filenames.includes(track.filename) 
+            ? { ...track, cover: undefined }
+            : track
+        )
+      );
+    }
+
+    // Показываем результат
+    if (updatedCount > 0) {
+      alert(`✅ Successfully updated ${updatedCount} track(s)`);
+      
+      // Принудительно обновляем данные
+      setTimeout(() => {
+        fetchMusicFiles();
+      }, 500);
+    } else {
+      alert('⚠️ No changes were made');
+    }
+    
+  } catch (error) {
+    console.error('Bulk update failed:', error);
+    alert('❌ Failed to update tracks. Please try again.');
+  }
+};
+
   const currentPlaylist = activePlaylist ? playlists.find(p => p.id === activePlaylist) : null;
   const displayedTracks = currentPlaylist 
     ? getPlaylistTracks(currentPlaylist, musicFiles)
     : musicFiles;
+
+  const playlistTracks = editingPlaylist 
+    ? getPlaylistTracks(editingPlaylist, musicFiles)
+    : [];
 
   return (
     <div className="App">
@@ -289,42 +382,31 @@ function App() {
         />
 
         {editingPlaylist && (
-  <Modal
-    type="playlist"
-    editingPlaylist={editingPlaylist}
-    editingTrack={null} // явно передаем null для другого типа
-    editPlaylistName={editPlaylistName}
-    editTrackData={editTrackData}
-    onEditPlaylistName={setEditPlaylistName}
-    onEditTrackData={setEditTrackData}
-    onUpdatePlaylist={updatePlaylist}
-    onUpdateTrack={updateTrackMetadata}
-    onDeletePlaylist={deletePlaylist}
-    onDeleteTrack={deleteTrack}
-    onRemovePlaylistCover={removePlaylistCover}
-    onClose={() => setEditingPlaylist(null)}
-    onCoverUpload={triggerCoverUpload}
-  />
-)}
+          <EditPlaylistModal
+            playlist={editingPlaylist}
+            editName={editPlaylistName}
+            onEditName={setEditPlaylistName}
+            onUpdate={updatePlaylist}
+            onDelete={deletePlaylist}
+            onRemoveCover={removePlaylistCover}
+            onClose={() => setEditingPlaylist(null)}
+            onCoverUpload={(id) => triggerCoverUpload('playlist', id)}
+            playlistTracks={playlistTracks}
+            onBulkUpdate={handleBulkUpdate}
+          />
+        )}
 
-{editingTrack && (
-  <Modal
-    type="track"
-    editingPlaylist={null} // явно передаем null для другого типа
-    editingTrack={editingTrack}
-    editPlaylistName={editPlaylistName}
-    editTrackData={editTrackData}
-    onEditPlaylistName={setEditPlaylistName}
-    onEditTrackData={setEditTrackData}
-    onUpdatePlaylist={updatePlaylist}
-    onUpdateTrack={updateTrackMetadata}
-    onDeletePlaylist={deletePlaylist}
-    onDeleteTrack={deleteTrack}
-    onRemovePlaylistCover={removePlaylistCover}
-    onClose={() => setEditingTrack(null)}
-    onCoverUpload={triggerCoverUpload}
-  />
-)}
+        {editingTrack && (
+          <EditTrackModal
+            track={editingTrack}
+            editData={editTrackData}
+            onEditData={setEditTrackData}
+            onUpdate={updateTrackMetadata}
+            onDelete={deleteTrack}
+            onClose={() => setEditingTrack(null)}
+            onCoverUpload={(filename) => triggerCoverUpload('track', filename)}
+          />
+        )}
 
         <input
           type="file"

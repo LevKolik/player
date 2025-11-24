@@ -70,7 +70,10 @@ const imageUpload = multer({
 app.use('/api/music', express.static(path.join(__dirname, '../uploads/music')));
 app.use('/api/covers', express.static(path.join(__dirname, '../uploads/covers')));
 
-// Получить список файлов
+// Временное хранилище для треков (вместо БД)
+let trackMetadata: { [filename: string]: { artist: string; album: string; cover?: string } } = {};
+
+// Обновите эндпоинт получения файлов:
 app.get('/api/music/files', (req, res) => {
   try {
     const musicDir = path.join(__dirname, '../uploads/music');
@@ -83,14 +86,17 @@ app.get('/api/music/files', (req, res) => {
       const filePath = path.join(musicDir, file);
       const stats = fs.statSync(filePath);
       
+      // Используем сохраненные метаданные или значения по умолчанию
+      const metadata = trackMetadata[file] || { artist: 'Unknown Artist', album: '' };
+      
       return {
         filename: file,
         title: file.replace(/\.[^/.]+$/, ""),
-        artist: 'Unknown Artist',
-        album: '',
+        artist: metadata.artist,
+        album: metadata.album,
         duration: 0,
         size: stats.size,
-        cover: undefined
+        cover: metadata.cover
       };
     });
     
@@ -287,13 +293,19 @@ app.post('/api/playlists/:id/cover', imageUpload.single('cover'), (req, res) => 
   res.json(playlist);
 });
 
-// Загрузить обложку для трека
+// Обновите эндпоинт загрузки обложки для трека:
 app.post('/api/music/:filename/cover', imageUpload.single('cover'), (req, res) => {
   const { filename } = req.params;
   
   if (!req.file) {
     return res.status(400).json({ error: 'No cover image uploaded' });
   }
+
+  // Сохраняем информацию об обложке
+  if (!trackMetadata[filename]) {
+    trackMetadata[filename] = { artist: 'Unknown Artist', album: '' };
+  }
+  trackMetadata[filename].cover = req.file.filename;
 
   res.json({ 
     cover: req.file.filename,
@@ -330,4 +342,39 @@ app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
   console.log(`✅ Music API: http://localhost:${PORT}/api/music/files`);
   console.log(`✅ Playlists API: http://localhost:${PORT}/api/playlists`);
+});
+
+// Обновите эндпоинт массового обновления:
+app.post('/api/music/bulk-update', (req, res) => {
+  const { filenames, artist, album } = req.body;
+
+  if (!filenames || !Array.isArray(filenames)) {
+    return res.status(400).json({ error: 'Filenames array is required' });
+  }
+
+  try {
+    // Обновляем метаданные в нашем временном хранилище
+    filenames.forEach(filename => {
+      if (!trackMetadata[filename]) {
+        trackMetadata[filename] = { artist: 'Unknown Artist', album: '' };
+      }
+      
+      if (artist) trackMetadata[filename].artist = artist;
+      if (album !== undefined) trackMetadata[filename].album = album;
+    });
+
+    console.log('Bulk update completed:', { 
+      trackCount: filenames.length, 
+      artist, 
+      album 
+    });
+    
+    res.json({ 
+      message: 'Tracks updated successfully', 
+      updated: filenames.length
+    });
+  } catch (error) {
+    console.error('Bulk update error:', error);
+    res.status(500).json({ error: 'Failed to update tracks' });
+  }
 });
