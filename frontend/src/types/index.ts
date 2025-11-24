@@ -15,3 +15,14 @@ export interface Playlist {
   createdAt: Date;
   cover?: string;
 }
+
+export interface EditTrackData {
+  title: string;
+  artist: string;
+  album: string;
+}
+
+export interface UploadingCover {
+  type: 'playlist' | 'track';
+  id: string;
+}

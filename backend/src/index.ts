@@ -14,8 +14,8 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Настройка загрузки файлов
-const storage = multer.diskStorage({
+// Настройка загрузки аудио файлов
+const audioStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, '../uploads/music');
     if (!fs.existsSync(uploadDir)) {
@@ -28,8 +28,22 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
-  storage,
+// Настройка загрузки изображений
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, '../uploads/covers');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
+
+const audioUpload = multer({ 
+  storage: audioStorage,
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/flac'];
     if (allowedTypes.includes(file.mimetype)) {
@@ -40,8 +54,21 @@ const upload = multer({
   }
 });
 
-// Статические файлы (для доступа к музыке)
+const imageUpload = multer({ 
+  storage: imageStorage,
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid image type'));
+    }
+  }
+});
+
+// Статические файлы
 app.use('/api/music', express.static(path.join(__dirname, '../uploads/music')));
+app.use('/api/covers', express.static(path.join(__dirname, '../uploads/covers')));
 
 // Получить список файлов
 app.get('/api/music/files', (req, res) => {
@@ -60,8 +87,10 @@ app.get('/api/music/files', (req, res) => {
         filename: file,
         title: file.replace(/\.[^/.]+$/, ""),
         artist: 'Unknown Artist',
+        album: '',
         duration: 0,
-        size: stats.size
+        size: stats.size,
+        cover: undefined
       };
     });
     
@@ -72,7 +101,7 @@ app.get('/api/music/files', (req, res) => {
 });
 
 // Загрузить файл
-app.post('/api/music/upload', upload.single('music'), (req, res) => {
+app.post('/api/music/upload', audioUpload.single('music'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
@@ -109,7 +138,8 @@ app.post('/api/playlists', (req, res) => {
     id: (playlistIdCounter++).toString(),
     name,
     tracks: [],
-    createdAt: new Date()
+    createdAt: new Date(),
+    cover: undefined
   };
 
   playlists.push(newPlaylist);
@@ -171,6 +201,124 @@ app.delete('/api/playlists/:id', (req, res) => {
   const { id } = req.params;
   playlists = playlists.filter(p => p.id !== id);
   res.json({ message: 'Playlist deleted' });
+});
+
+// === РЕДАКТИРОВАНИЕ ===
+
+// Редактировать плейлист
+app.put('/api/playlists/:id', (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  const playlist = playlists.find(p => p.id === id);
+  if (!playlist) {
+    return res.status(404).json({ error: 'Playlist not found' });
+  }
+
+  if (!name) {
+    return res.status(400).json({ error: 'Playlist name is required' });
+  }
+
+  playlist.name = name;
+  res.json(playlist);
+});
+
+// Редактировать метаданные трека
+app.put('/api/music/:filename/metadata', (req, res) => {
+  const { filename } = req.params;
+  const { title, artist, album } = req.body;
+
+  // В реальном приложении здесь бы сохранялись в БД
+  // Пока просто возвращаем обновленные данные
+  const updatedMetadata = {
+    filename,
+    title: title || filename.replace(/\.[^/.]+$/, ""),
+    artist: artist || 'Unknown Artist',
+    album: album || '',
+    duration: 0,
+    size: 0,
+    cover: undefined
+  };
+
+  res.json(updatedMetadata);
+});
+
+// Удалить трек с сервера
+app.delete('/api/music/:filename', (req, res) => {
+  const { filename } = req.params;
+  
+  try {
+    const musicDir = path.join(__dirname, '../uploads/music');
+    const filePath = path.join(musicDir, filename);
+    
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      
+      // Удаляем трек из всех плейлистов
+      playlists.forEach(playlist => {
+        playlist.tracks = playlist.tracks.filter(track => track !== filename);
+      });
+      
+      res.json({ message: 'File deleted successfully' });
+    } else {
+      res.status(404).json({ error: 'File not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete file' });
+  }
+});
+
+// === ОБЛОЖКИ ===
+
+// Загрузить обложку для плейлиста
+app.post('/api/playlists/:id/cover', imageUpload.single('cover'), (req, res) => {
+  const { id } = req.params;
+  
+  if (!req.file) {
+    return res.status(400).json({ error: 'No cover image uploaded' });
+  }
+
+  const playlist = playlists.find(p => p.id === id);
+  if (!playlist) {
+    return res.status(404).json({ error: 'Playlist not found' });
+  }
+
+  playlist.cover = req.file.filename;
+  res.json(playlist);
+});
+
+// Загрузить обложку для трека
+app.post('/api/music/:filename/cover', imageUpload.single('cover'), (req, res) => {
+  const { filename } = req.params;
+  
+  if (!req.file) {
+    return res.status(400).json({ error: 'No cover image uploaded' });
+  }
+
+  res.json({ 
+    cover: req.file.filename,
+    message: 'Cover uploaded successfully'
+  });
+});
+
+// Удалить обложку плейлиста
+app.delete('/api/playlists/:id/cover', (req, res) => {
+  const { id } = req.params;
+
+  const playlist = playlists.find(p => p.id === id);
+  if (!playlist) {
+    return res.status(404).json({ error: 'Playlist not found' });
+  }
+
+  if (playlist.cover) {
+    const coverPath = path.join(__dirname, '../uploads/covers', playlist.cover);
+    if (fs.existsSync(coverPath)) {
+      fs.unlinkSync(coverPath);
+    }
+    playlist.cover = undefined;
+  }
+
+  res.json(playlist);
 });
 
 // Тестовый эндпоинт

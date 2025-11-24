@@ -1,23 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React, { useState, useEffect, useRef } from 'react';
+import { MusicFile, Playlist, EditTrackData, UploadingCover } from './types';
+import { musicApi, playlistsApi } from './services/api';
+import { getPlaylistTracks } from './utils';
+import PlaylistItem from './components/PlaylistItem';
+import TrackItem from './components/TrackItem';
+import AudioPlayer from './components/AudioPlayer';
+import FileUpload from './components/FileUpload';
+import Modal from './components/Modal';
 import './App.css';
-
-interface MusicFile {
-  filename: string;
-  title: string;
-  artist: string;
-  duration: number;
-  size: number;
-}
-
-interface Playlist {
-  id: string;
-  name: string;
-  tracks: string[];
-  createdAt: Date;
-}
-
-const API_BASE = 'http://localhost:5000/api';
 
 function App() {
   const [musicFiles, setMusicFiles] = useState<MusicFile[]>([]);
@@ -26,6 +16,18 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [activePlaylist, setActivePlaylist] = useState<string | null>(null);
+  
+  const [editingPlaylist, setEditingPlaylist] = useState<Playlist | null>(null);
+  const [editingTrack, setEditingTrack] = useState<MusicFile | null>(null);
+  const [editPlaylistName, setEditPlaylistName] = useState('');
+  const [editTrackData, setEditTrackData] = useState<EditTrackData>({
+    title: '',
+    artist: '',
+    album: ''
+  });
+
+  const [uploadingCoverFor, setUploadingCoverFor] = useState<UploadingCover | null>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchMusicFiles();
@@ -34,8 +36,8 @@ function App() {
 
   const fetchMusicFiles = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/music/files`);
-      setMusicFiles(response.data);
+      const data = await musicApi.getFiles();
+      setMusicFiles(data);
     } catch (error) {
       console.error('Failed to fetch music files:', error);
     }
@@ -43,67 +45,40 @@ function App() {
 
   const fetchPlaylists = async () => {
     try {
-      const response = await axios.get(`${API_BASE}/playlists`);
-      setPlaylists(response.data);
+      const data = await playlistsApi.getAll();
+      setPlaylists(data);
     } catch (error) {
       console.error('Failed to fetch playlists:', error);
     }
   };
 
   const createPlaylist = async () => {
-  console.log('Create playlist clicked'); // ← добавить
-  console.log('Playlist name:', newPlaylistName); // ← добавить
-  
-  if (!newPlaylistName.trim()) {
-    console.log('Playlist name is empty'); // ← добавить
-    return;
-  }
-  
-  try {
-    console.log('Sending request to backend...'); // ← добавить
-    const response = await axios.post(`${API_BASE}/playlists`, {
-      name: newPlaylistName
-    });
-    console.log('Backend response:', response.data); // ← добавить
+    if (!newPlaylistName.trim()) return;
     
-    setPlaylists([...playlists, response.data]);
-    setNewPlaylistName('');
-  } catch (error) {
-    console.error('Failed to create playlist:', error);
-    // Добавим больше информации об ошибке
-    if (axios.isAxiosError(error)) {
-      console.error('Error response:', error.response?.data);
-      console.error('Error status:', error.response?.status);
-    }
-  }
-};
-
-  const addToPlaylist = async (playlistId: string, filename: string) => {
     try {
-      await axios.post(`${API_BASE}/playlists/${playlistId}/tracks`, {
-        filename
-      });
-      fetchPlaylists(); // Обновляем плейлисты
+      const newPlaylist = await playlistsApi.create(newPlaylistName);
+      setPlaylists([...playlists, newPlaylist]);
+      setNewPlaylistName('');
     } catch (error) {
-      console.error('Failed to add track to playlist:', error);
+      console.error('Failed to create playlist:', error);
     }
   };
 
-  const getPlaylistTracks = (playlist: Playlist) => {
-    return musicFiles.filter(file => playlist.tracks.includes(file.filename));
+  const addToPlaylist = async (playlistId: string, filename: string) => {
+    try {
+      await playlistsApi.addTrack(playlistId, filename);
+      fetchPlaylists();
+    } catch (error) {
+      console.error('Failed to add track to playlist:', error);
+    }
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const formData = new FormData();
-    formData.append('music', file);
-
     try {
-      await axios.post(`${API_BASE}/music/upload`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
+      await musicApi.upload(file);
       setTimeout(() => {
         fetchMusicFiles();
       }, 1000);
@@ -117,23 +92,140 @@ function App() {
     setIsPlaying(true);
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  // Функции редактирования
+  const updatePlaylist = async () => {
+    if (!editingPlaylist || !editPlaylistName.trim()) return;
+    
+    try {
+      const updatedPlaylist = await playlistsApi.update(editingPlaylist.id, editPlaylistName);
+      setPlaylists(playlists.map(p => p.id === editingPlaylist.id ? updatedPlaylist : p));
+      setEditingPlaylist(null);
+      setEditPlaylistName('');
+    } catch (error) {
+      console.error('Failed to update playlist:', error);
+    }
   };
+
+  const updateTrackMetadata = async () => {
+    if (!editingTrack) return;
+    
+    try {
+      const updatedTrack = await musicApi.updateMetadata(editingTrack.filename, editTrackData);
+      setMusicFiles(musicFiles.map(track =>
+        track.filename === editingTrack.filename ? { ...track, ...updatedTrack } : track
+      ));
+      setEditingTrack(null);
+      setEditTrackData({ title: '', artist: '', album: '' });
+    } catch (error) {
+      console.error('Failed to update track:', error);
+    }
+  };
+
+  const deletePlaylist = async (playlistId: string) => {
+    if (!window.confirm('Are you sure you want to delete this playlist?')) return;
+    
+    try {
+      await playlistsApi.delete(playlistId);
+      setPlaylists(playlists.filter(p => p.id !== playlistId));
+      if (activePlaylist === playlistId) {
+        setActivePlaylist(null);
+      }
+    } catch (error) {
+      console.error('Failed to delete playlist:', error);
+    }
+  };
+
+  const deleteTrack = async (filename: string) => {
+    if (!window.confirm('Are you sure you want to delete this track?')) return;
+    
+    try {
+      await musicApi.delete(filename);
+      setMusicFiles(musicFiles.filter(track => track.filename !== filename));
+      setPlaylists(playlists.map(playlist => ({
+        ...playlist,
+        tracks: playlist.tracks.filter(track => track !== filename)
+      })));
+    } catch (error) {
+      console.error('Failed to delete track:', error);
+    }
+  };
+
+  const startEditingPlaylist = (playlist: Playlist) => {
+    setEditingPlaylist(playlist);
+    setEditPlaylistName(playlist.name);
+  };
+
+  const startEditingTrack = (track: MusicFile) => {
+    setEditingTrack(track);
+    setEditTrackData({
+      title: track.title,
+      artist: track.artist,
+      album: track.album || ''
+    });
+  };
+
+  // Функции для работы с обложками
+  const uploadPlaylistCover = async (playlistId: string, file: File) => {
+    try {
+      const updatedPlaylist = await playlistsApi.uploadCover(playlistId, file);
+      setPlaylists(playlists.map(p => p.id === playlistId ? updatedPlaylist : p));
+      setUploadingCoverFor(null);
+    } catch (error) {
+      console.error('Failed to upload playlist cover:', error);
+    }
+  };
+
+  const uploadTrackCover = async (filename: string, file: File) => {
+    try {
+      const response = await musicApi.uploadCover(filename, file);
+      setMusicFiles(musicFiles.map(track =>
+        track.filename === filename ? { ...track, cover: response.cover } : track
+      ));
+      setUploadingCoverFor(null);
+    } catch (error) {
+      console.error('Failed to upload track cover:', error);
+    }
+  };
+
+  const removePlaylistCover = async (playlistId: string) => {
+    try {
+      const updatedPlaylist = await playlistsApi.removeCover(playlistId);
+      setPlaylists(playlists.map(p => p.id === playlistId ? updatedPlaylist : p));
+    } catch (error) {
+      console.error('Failed to remove playlist cover:', error);
+    }
+  };
+
+  const handleCoverUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !uploadingCoverFor) return;
+
+    if (uploadingCoverFor.type === 'playlist') {
+      uploadPlaylistCover(uploadingCoverFor.id, file);
+    } else {
+      uploadTrackCover(uploadingCoverFor.id, file);
+    }
+  };
+
+  const triggerCoverUpload = (type: 'playlist' | 'track', id: string) => {
+    setUploadingCoverFor({ type, id });
+    setTimeout(() => {
+      coverInputRef.current?.click();
+    }, 0);
+  };
+
+  const currentPlaylist = activePlaylist ? playlists.find(p => p.id === activePlaylist) : null;
+  const displayedTracks = currentPlaylist 
+    ? getPlaylistTracks(currentPlaylist, musicFiles)
+    : musicFiles;
 
   return (
     <div className="App">
       <header className="App-header">
         <h1>Music Player</h1>
         
-        {/* Загрузка файлов */}
-        <div className="upload-section">
-          <input type="file" accept="audio/*" onChange={handleFileUpload} />
-        </div>
+        <FileUpload onFileUpload={handleFileUpload} />
 
-        {/* Создание плейлиста */}
         <div className="playlist-creation">
           <input
             type="text"
@@ -145,89 +237,102 @@ function App() {
         </div>
 
         <div className="content">
-          {/* Список плейлистов */}
           <div className="playlists-section">
             <h2>Playlists</h2>
             {playlists.map(playlist => (
-              <div 
-                key={playlist.id} 
-                className={`playlist-item ${activePlaylist === playlist.id ? 'active' : ''}`}
-                onClick={() => setActivePlaylist(playlist.id)}
-              >
-                <div className="playlist-name">{playlist.name}</div>
-                <div className="track-count">{playlist.tracks.length} tracks</div>
-              </div>
+              <PlaylistItem
+                key={playlist.id}
+                playlist={playlist}
+                isActive={activePlaylist === playlist.id}
+                onSelect={setActivePlaylist}
+                onEdit={startEditingPlaylist}
+              />
             ))}
           </div>
 
-          {/* Список треков */}
           <div className="tracks-section">
-            <h2>
-              {activePlaylist 
-                ? `Playlist: ${playlists.find(p => p.id === activePlaylist)?.name}`
-                : 'All Tracks'
-              }
-            </h2>
+            <div className="tracks-header">
+              {activePlaylist ? (
+                <div className="playlist-header">
+                  <button 
+                    className="back-button"
+                    onClick={() => setActivePlaylist(null)}
+                  >
+                    ←
+                  </button>
+                  <h2>Playlist: {currentPlaylist?.name}</h2>
+                </div>
+              ) : (
+                <h2>All Tracks</h2>
+              )}
+            </div>
             
-            {(activePlaylist 
-              ? getPlaylistTracks(playlists.find(p => p.id === activePlaylist)!)
-              : musicFiles
-            ).map((track, index) => (
-              <div 
-                key={index} 
-                className={`track-item ${currentTrack?.filename === track.filename ? 'active' : ''}`}
-              >
-                <div 
-                  className="track-info"
-                  onClick={() => playTrack(track)}
-                >
-                  <div className="track-title">{track.title}</div>
-                  <div className="track-artist">{track.artist}</div>
-                </div>
-                
-                <div className="track-actions">
-                  {!activePlaylist && (
-                    <select 
-                      onChange={(e) => addToPlaylist(e.target.value, track.filename)}
-                      defaultValue=""
-                    >
-                      <option value="" disabled>Add to playlist</option>
-                      {playlists.map(playlist => (
-                        <option key={playlist.id} value={playlist.id}>
-                          {playlist.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <div className="track-duration">
-                    {formatTime(track.duration)}
-                  </div>
-                </div>
-              </div>
+            {displayedTracks.map((track, index) => (
+              <TrackItem
+                key={index}
+                track={track}
+                playlists={playlists}
+                isActive={currentTrack?.filename === track.filename}
+                showAddToPlaylist={!activePlaylist}
+                onPlay={playTrack}
+                onAddToPlaylist={addToPlaylist}
+                onEdit={startEditingTrack}
+              />
             ))}
           </div>
         </div>
 
-        {/* Аудиоплеер */}
-        {currentTrack && (
-          <div className="audio-player">
-            <audio 
-              controls 
-              autoPlay={isPlaying}
-              onEnded={() => setIsPlaying(false)}
-              key={currentTrack.filename}
-            >
-              <source 
-                src={`${API_BASE}/music/${currentTrack.filename}`} 
-                type="audio/mpeg" 
-              />
-              Your browser does not support the audio element.
-            </audio>
-            <div className="now-playing">
-              Now playing: {currentTrack.title} - {currentTrack.artist}
-            </div>
-          </div>
-        )}
+        <AudioPlayer
+          currentTrack={currentTrack}
+          isPlaying={isPlaying}
+          onEnded={() => setIsPlaying(false)}
+        />
+
+        {editingPlaylist && (
+  <Modal
+    type="playlist"
+    editingPlaylist={editingPlaylist}
+    editingTrack={null} // явно передаем null для другого типа
+    editPlaylistName={editPlaylistName}
+    editTrackData={editTrackData}
+    onEditPlaylistName={setEditPlaylistName}
+    onEditTrackData={setEditTrackData}
+    onUpdatePlaylist={updatePlaylist}
+    onUpdateTrack={updateTrackMetadata}
+    onDeletePlaylist={deletePlaylist}
+    onDeleteTrack={deleteTrack}
+    onRemovePlaylistCover={removePlaylistCover}
+    onClose={() => setEditingPlaylist(null)}
+    onCoverUpload={triggerCoverUpload}
+  />
+)}
+
+{editingTrack && (
+  <Modal
+    type="track"
+    editingPlaylist={null} // явно передаем null для другого типа
+    editingTrack={editingTrack}
+    editPlaylistName={editPlaylistName}
+    editTrackData={editTrackData}
+    onEditPlaylistName={setEditPlaylistName}
+    onEditTrackData={setEditTrackData}
+    onUpdatePlaylist={updatePlaylist}
+    onUpdateTrack={updateTrackMetadata}
+    onDeletePlaylist={deletePlaylist}
+    onDeleteTrack={deleteTrack}
+    onRemovePlaylistCover={removePlaylistCover}
+    onClose={() => setEditingTrack(null)}
+    onCoverUpload={triggerCoverUpload}
+  />
+)}
+
+        <input
+          type="file"
+          accept="image/*"
+          style={{ display: 'none' }}
+          ref={coverInputRef}
+          onChange={handleCoverUpload}
+        />
       </header>
     </div>
   );
